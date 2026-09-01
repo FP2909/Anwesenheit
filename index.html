@@ -30,16 +30,18 @@
         }
 
         /* Kopfbereich in einer Zeile */
-        .site-header {
-            display: flex;
-            align-items: center;
-            justify-content: flex-start;
-            background: var(--card-bg);
-            padding: 20px 16px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            margin-bottom: 15px;
-        }
+       .site-header {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--card-bg);
+    padding: 20px 16px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    margin-bottom: 15px;
+}
 
         .header-title-container {
             display: flex;
@@ -64,6 +66,7 @@
             display: flex;
             align-items: center;
             gap: 14px;
+            margin-left: auto !important; /* Drückt Logo + Text ganz nach rechts */
         }
 
         .header-brand-container img {
@@ -425,15 +428,26 @@
 
         /* Footer Style */
         footer {
-            margin-top: 25px;
-            padding-top: 15px;
-            border-top: 1px solid var(--border-color);
-            display: flex;
-            justify-content: flex-start;
-            align-items: center;
-            font-size: 11px;
-            color: #64748b;
-        }
+    margin-top: 25px;
+    padding-top: 15px;
+    border-top: 1px solid var(--border-color);
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 11px;
+    color: #64748b;
+}
+
+.footer-left {
+    text-align: left;
+}
+
+.footer-right {
+    text-align: right;
+    margin-left: auto;
+}
 
         /* ===== MOBILE / PWA ===== */
         html, body { min-height: 100%; }
@@ -476,6 +490,7 @@
             body { padding-top: max(6px, env(safe-area-inset-top)); }
         }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -624,6 +639,17 @@ window.addEventListener('mouseup', () => {
     }
 });
 
+// ============================================================
+// SUPABASE – ZENTRALE SPEICHERUNG DER PLANUNGSDATEN
+// ============================================================
+const SUPABASE_URL = 'https://cahhwvqdebadiietbufz.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhaGh3dnFkZWJhZGlpZXRidWZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxMzY4OTksImV4cCI6MjEwMzcxMjg5OX0.z4M1IHOhVYGDg6vWovIWRPiDgHgpjVNT0auDLKFoyu0';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let supabaseSaveTimer = null;
+let supabaseSaveChain = Promise.resolve();
+let supabaseInitialLoadDone = false;
+
 function loadFromStorage() {
     const catStore = localStorage.getItem('abw_categories');
     categories = catStore ? JSON.parse(catStore) : [...defaultCategories];
@@ -639,11 +665,71 @@ function loadFromStorage() {
 }
 
 function saveToStorage() {
+    // Lokale Sicherung/Fallback beibehalten.
     localStorage.setItem('abw_categories', JSON.stringify(categories));
     localStorage.setItem('abw_employees', JSON.stringify(employees));
     localStorage.setItem('abw_top_buttons', JSON.stringify(topButtons));
     localStorage.setItem('abw_planner_data', JSON.stringify(plannerData));
+
+    // Erst nach dem initialen Laden aus Supabase wieder zurückschreiben.
+    queueSupabaseSave();
 }
+
+function queueSupabaseSave() {
+    if (!supabaseInitialLoadDone) return;
+    clearTimeout(supabaseSaveTimer);
+    supabaseSaveTimer = setTimeout(() => {
+        const snapshot = JSON.parse(JSON.stringify(plannerData || {}));
+        supabaseSaveChain = supabaseSaveChain
+            .then(() => speichereDatenZentral(snapshot))
+            .catch(err => console.error('Supabase-Speicherwarteschlange:', err));
+    }, 250);
+}
+
+async function speichereDatenZentral(planungsDaten) {
+    try {
+        const { error } = await supabaseClient.from('anwesenheiten').upsert({
+            id: 'planung',
+            eintraege: { eintraege: planungsDaten },
+            updated_at: new Date().toISOString()
+        });
+        if (error) throw error;
+        console.log('Supabase: Planungsdaten gespeichert.');
+    } catch (err) {
+        console.error('Speicherfehler:', err);
+    }
+}
+
+async function ladeZentraleDaten() {
+    try {
+        const { data, error } = await supabaseClient
+            .from('anwesenheiten')
+            .select('eintraege')
+            .eq('id', 'planung')
+            .single();
+
+        if (error && error.code !== 'PGRST116') throw error;
+
+        if (data && data.eintraege) {
+            plannerData = data.eintraege.eintraege || {};
+            localStorage.setItem('abw_planner_data', JSON.stringify(plannerData));
+            console.log('Supabase: Planungsdaten geladen.');
+        } else {
+            // Erster Aufruf: vorhandene lokale Daten einmalig zentral übernehmen.
+            await speichereDatenZentral(plannerData || {});
+            console.log('Supabase: Keine zentrale Planung vorhanden – lokale Daten wurden übernommen.');
+        }
+
+        supabaseInitialLoadDone = true;
+        renderPlanner();
+    } catch (err) {
+        // Offline/Fehler: mit den lokalen Daten weiterarbeiten.
+        console.error('Ladefehler:', err);
+        supabaseInitialLoadDone = true;
+        renderPlanner();
+    }
+}
+
 
 function getISOWeek(date) {
     const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
@@ -777,7 +863,7 @@ function renderPlanner() {
     for (let day = 1; day <= daysInMonth; day++) {
         let date = new Date(year, month, day);
         let dayOfWeek = date.getDay();
-        let isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+        let isWeekend = (dayOfWeek === 0);
         let dateKey = `${year}-${String(month + 1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
                 let isHoliday = holidays[dateKey];
                 let weekendClass = (isWeekend ? 'weekend ' : '') + (isHoliday ? 'holiday' : '');
@@ -812,7 +898,7 @@ function renderPlanner() {
             for (let day = 1; day <= daysInMonth; day++) {
                 let date = new Date(year, month, day);
                 let dayOfWeek = date.getDay();
-                let isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+                let isWeekend = (dayOfWeek === 0);
                 let dateKey = `${year}-${String(month + 1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
                 let holidayName = holidays[dateKey] || '';
                 let isHoliday = !!holidayName;
@@ -1181,15 +1267,17 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 }
 
 // INITIALISIERUNG
+// Zuerst lokal laden/rendern, danach den zentralen Supabase-Datenbestand laden.
 loadFromStorage();
 renderTopBarButtons();
 renderToolbar();
 renderPlanner();
+ladeZentraleDaten();
 </script>
 
 <footer>
-    <span>© Frank Prothmann • Version 2.6 PWA</span>
-    <span>Erstellt: D. Krüger - 18.08.2026</span>
+    <div class="footer-left">&copy; Frank Prothmann &bull; Version 2.6.1</div>
+    <div class="footer-right">Erstellt: D. Krüger - Datum: <span id="current-date">01.09.2026</span></div>
 </footer>
 
 </body>
