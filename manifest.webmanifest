@@ -3,7 +3,7 @@
   "short_name": "Anwesenheitsplaner",
   "description": "Mobiler An-/Abwesenheitsplaner für Markt-Bäckerei Ettenheim",
   "lang": "de-DE",
-  "start_url": "./index.html",
+  "start_url": "/Anwesenheit/",
   "scope": "/Anwesenheit/",
   "display": "standalone",
   "orientation": "landscape",
