@@ -675,61 +675,28 @@ function saveToStorage() {
     queueSupabaseSave();
 }
 
-function getSupabaseSnapshot() {
-    // Immer einen vollständigen Snapshot speichern, damit Konfiguration und
-    // Planung niemals getrennt voneinander überschrieben werden.
-    return JSON.parse(JSON.stringify({
-        plannerData: plannerData || {},
-        categories: categories || [],
-        employees: employees || [],
-        topButtons: topButtons || []
-    }));
-}
-
 function queueSupabaseSave() {
     if (!supabaseInitialLoadDone) return;
     clearTimeout(supabaseSaveTimer);
     supabaseSaveTimer = setTimeout(() => {
-        const snapshot = getSupabaseSnapshot();
+        const snapshot = JSON.parse(JSON.stringify(plannerData || {}));
         supabaseSaveChain = supabaseSaveChain
             .then(() => speichereDatenZentral(snapshot))
             .catch(err => console.error('Supabase-Speicherwarteschlange:', err));
-    }, 150);
+    }, 250);
 }
 
-// Sofort speichern: wird für Einstellungen verwendet, bei denen der Benutzer
-// ausdrücklich auf „Speichern & Anwenden“ klickt.
-async function speichereJetztZentral() {
-    if (!supabaseInitialLoadDone) return false;
-    clearTimeout(supabaseSaveTimer);
-    const snapshot = getSupabaseSnapshot();
-    supabaseSaveChain = supabaseSaveChain.then(() => speichereDatenZentral(snapshot));
-    return await supabaseSaveChain;
-}
-
-async function speichereDatenZentral(daten) {
+async function speichereDatenZentral(planungsDaten) {
     try {
-        const payload = {
+        const { error } = await supabaseClient.from('anwesenheiten').upsert({
             id: 'planung',
-            eintraege: {
-                plannerData: daten.plannerData || {},
-                categories: daten.categories || [],
-                employees: daten.employees || [],
-                topButtons: daten.topButtons || []
-            },
+            eintraege: { eintraege: planungsDaten },
             updated_at: new Date().toISOString()
-        };
-
-        const { error } = await supabaseClient
-            .from('anwesenheiten')
-            .upsert(payload, { onConflict: 'id' });
-
+        });
         if (error) throw error;
-        console.log('Supabase: Planung und Einstellungen gespeichert.');
-        return true;
+        console.log('Supabase: Planungsdaten gespeichert.');
     } catch (err) {
-        console.error('Supabase-Speicherfehler:', err);
-        return false;
+        console.error('Speicherfehler:', err);
     }
 }
 
@@ -744,49 +711,21 @@ async function ladeZentraleDaten() {
         if (error && error.code !== 'PGRST116') throw error;
 
         if (data && data.eintraege) {
-            const zentral = data.eintraege;
-
-            // Neue Struktur: plannerData + Einstellungen.
-            // Alte Struktur wird weiterhin unterstützt, damit bestehende Daten nicht verloren gehen.
-            if (zentral.plannerData !== undefined || zentral.categories !== undefined ||
-                zentral.employees !== undefined || zentral.topButtons !== undefined) {
-                plannerData = zentral.plannerData || {};
-                if (Array.isArray(zentral.categories) && zentral.categories.length) categories = zentral.categories;
-                if (Array.isArray(zentral.employees) && zentral.employees.length) employees = zentral.employees;
-                if (Array.isArray(zentral.topButtons) && zentral.topButtons.length) topButtons = zentral.topButtons;
-
-                localStorage.setItem('abw_planner_data', JSON.stringify(plannerData));
-                localStorage.setItem('abw_categories', JSON.stringify(categories));
-                localStorage.setItem('abw_employees', JSON.stringify(employees));
-                localStorage.setItem('abw_top_buttons', JSON.stringify(topButtons));
-                console.log('Supabase: Planung, Mitarbeiter, Gründe/Farben und Button-Reihenfolge geladen.');
-            } else {
-                // Alte Version: eintraege.eintraege enthielt nur die Planungsdaten.
-                plannerData = zentral.eintraege || {};
-                localStorage.setItem('abw_planner_data', JSON.stringify(plannerData));
-                console.log('Supabase: Alte Planungsstruktur geladen.');
-            }
+            plannerData = data.eintraege.eintraege || {};
+            localStorage.setItem('abw_planner_data', JSON.stringify(plannerData));
+            console.log('Supabase: Planungsdaten geladen.');
         } else {
-            // Erster Aufruf: vorhandene lokale Daten komplett zentral übernehmen.
-            await speichereDatenZentral({
-                plannerData: plannerData || {},
-                categories: categories || [],
-                employees: employees || [],
-                topButtons: topButtons || []
-            });
-            console.log('Supabase: Keine zentrale Planung vorhanden – lokale Daten wurden komplett übernommen.');
+            // Erster Aufruf: vorhandene lokale Daten einmalig zentral übernehmen.
+            await speichereDatenZentral(plannerData || {});
+            console.log('Supabase: Keine zentrale Planung vorhanden – lokale Daten wurden übernommen.');
         }
 
         supabaseInitialLoadDone = true;
-        renderTopBarButtons();
-        renderToolbar();
         renderPlanner();
     } catch (err) {
         // Offline/Fehler: mit den lokalen Daten weiterarbeiten.
         console.error('Ladefehler:', err);
         supabaseInitialLoadDone = true;
-        renderTopBarButtons();
-        renderToolbar();
         renderPlanner();
     }
 }
@@ -1112,8 +1051,6 @@ function saveCategories() {
     renderToolbar();
     renderPlanner();
     closeModal('catModal');
-    // Benutzer hat ausdrücklich gespeichert: zusätzlich sofort zentral sichern.
-    speichereJetztZentral();
 }
 
 function renderEmpInputs() {
@@ -1200,7 +1137,6 @@ function saveEmployees() {
     saveToStorage();
     renderPlanner();
     closeModal('empModal');
-    speichereJetztZentral();
 }
 
 function renderBtnOrderInputs() {
@@ -1233,11 +1169,10 @@ function saveButtonOrder() {
     saveToStorage();
     renderTopBarButtons();
     closeModal('btnOrderModal');
-    speichereJetztZentral();
 }
 
 function resetButtonOrder() {
-    topButtons = JSON.parse(JSON.stringify(defaultTopButtons));
+    topButtons = [...defaultTopButtons];
     renderBtnOrderInputs();
 }
 
@@ -1296,8 +1231,6 @@ function resetAll() {
         renderTopBarButtons();
         renderToolbar();
         renderPlanner();
-        // Auch der Werksreset muss zentral übernommen werden.
-        speichereJetztZentral();
     }
 }
 
